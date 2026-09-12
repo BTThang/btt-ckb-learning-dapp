@@ -1,27 +1,66 @@
+const express = require("express");
+const cors = require("cors");
 const { ccc } = require("@ckb-ccc/ccc");
 
-async function main() {
-  console.log("CCC loaded successfully!");
+const app = express();
+const port = 3000;
 
-  const client = new ccc.ClientPublicTestnet();
+app.use(cors());
 
-  console.log("CKB Testnet client created!");
+// Create CKB Testnet client
+const client = new ccc.ClientPublicTestnet();
 
-  const tip = await client.getTip();
+console.log("CKB Testnet client created!");
 
-  console.log("Latest CKB Testnet block:", tip.toString());
+// API: Get latest CKB Testnet block
+app.get("/api/ckb/tip", async (req, res) => {
+  try {
+    const tip = await client.getTip();
 
-  console.log("\nClient methods related to Cell:");
+    res.json({
+      blockNumber: tip.toString(),
+    });
+  } catch (error) {
+    console.error("Failed to get latest block:", error);
 
-  console.log(
-    Object.getOwnPropertyNames(
-      Object.getPrototypeOf(client)
-    ).filter((name) =>
-      name.toLowerCase().includes("cell")
-    )
-  );
-}
+    res.status(500).json({
+      error: "Failed to get latest CKB block",
+    });
+  }
+});
 
-main().catch((error) => {
-  console.error("Error:", error);
+// API: Get CKB balance by address
+app.get("/api/ckb/balance", async (req, res) => {
+  try {
+    const address = req.query.address;
+
+    if (!address) {
+      return res.status(400).json({
+        error: "Address is required",
+      });
+    }
+
+    const { script: lock } = await ccc.Address.fromString(
+      address,
+      client,
+    );
+
+    const balance = await client.getBalanceSingle(lock);
+
+    res.json({
+      address,
+      balance: ccc.fixedPointToString(balance),
+      unit: "CKB",
+    });
+  } catch (error) {
+    console.error("Failed to get balance:", error);
+
+    res.status(400).json({
+      error: "Invalid address or failed to get balance",
+    });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Backend server running at http://localhost:${port}`);
 });
