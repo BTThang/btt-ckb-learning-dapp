@@ -33,10 +33,32 @@ function App() {
   const [sporeContent, setSporeContent] = useState("Hello CKB Spore!");
   const [sporeLoading, setSporeLoading] = useState(false);
   const [sporeTxHash, setSporeTxHash] = useState("");
+  const [sporeId, setSporeId] = useState("");
+  const [sporeReceiver, setSporeReceiver] = useState("");
+  const [sporeTransferLoading, setSporeTransferLoading] =
+    useState(false);
+  const [sporeMeltLoading, setSporeMeltLoading] =
+    useState(false);
   const [signMessage, setSignMessage] = useState("Hello CKB!");
   const [messageSignature, setMessageSignature] =
-  useState<any>(null);
+    useState<any>(null);
   const [messageVerifyResult, setMessageVerifyResult] = useState("");
+  const [appTxHistory, setAppTxHistory] = useState<
+    {
+      txHash: string;
+      type: string;
+      timestamp: string;
+      status: string;
+      detail?: string;
+    }[]
+  >(() => {
+    const savedHistory =
+      localStorage.getItem("appTxHistory");
+
+    return savedHistory
+      ? JSON.parse(savedHistory)
+      : [];
+  });
 
   // Get CKB address
   useEffect(() => {
@@ -78,6 +100,13 @@ function App() {
       cancelled = true;
     };
   }, [signer]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      "appTxHistory",
+      JSON.stringify(appTxHistory),
+    );
+  }, [appTxHistory]);
 
   async function mintNewXudt() {
     if (!signer) return;
@@ -621,7 +650,7 @@ function App() {
       setCells(foundCells);
 
       // Get transaction history
-      const foundTransactions: {
+      const allTransactions: {
         txHash: string;
         blockNumber: string;
       }[] = [];
@@ -633,18 +662,24 @@ function App() {
           true,
         )
       ) {
-        foundTransactions.push({
+        allTransactions.push({
           txHash: txRecord.txHash,
           blockNumber: txRecord.blockNumber.toString(),
         });
-
-        // Limit to latest 10 transactions
-        if (foundTransactions.length >= 10) {
-          break;
-        }
       }
 
+      // Sort by block number: newest first
+      allTransactions.sort(
+        (a, b) =>
+          Number(b.blockNumber) - Number(a.blockNumber),
+      );
+
+      // Keep latest 10 transactions
+      const foundTransactions =
+        allTransactions.slice(0, 10);
+
       setTransactions(foundTransactions);
+
     } catch (error) {
       console.error(
         "Failed to refresh blockchain data:",
@@ -825,6 +860,7 @@ function App() {
 
       console.log("===== SPORE CREATED =====");
       console.log("Spore ID:", id);
+      setSporeId(id);
       console.log("Transaction:", tx);
 
       await tx.completeInputsByCapacity(
@@ -837,6 +873,27 @@ function App() {
 
       const txHash =
         await signer.sendTransaction(tx);
+
+      setAppTxHistory((prev) => {
+        const exists = prev.some(
+          (item) => item.txHash === txHash,
+        );
+
+        if (exists) {
+          return prev;
+        }
+
+        return [
+          {
+            txHash,
+            type: "Spore",
+            timestamp: new Date().toLocaleString(),
+            status: "submitted",
+            detail: "Create Spore",
+          },
+          ...prev,
+        ];
+      });
 
       console.log(
         "===== SPORE TRANSACTION SUCCESS =====",
@@ -857,6 +914,28 @@ function App() {
 
       console.log("===== SPORE TX =====");
       console.log("Status:", sporeTx?.status);
+
+      if (sporeTx?.status) {
+        setAppTxHistory((prev) =>
+          prev.map((item) =>
+            item.txHash === txHash
+              ? {
+                ...item,
+                status: sporeTx.status,
+              }
+              : item,
+          ),
+        );
+      }
+
+      waitForTransactionStatus(txHash).catch(
+        (error) =>
+          console.error(
+            "Failed to track transaction:",
+            error,
+          ),
+      );
+
       console.log(
         "Outputs:",
         sporeTx?.transaction?.outputs,
@@ -877,6 +956,236 @@ function App() {
     } finally {
       setSporeLoading(false);
     }
+  }
+
+  async function transferSpore() {
+    if (!signer || !sporeId || !sporeReceiver) return;
+
+    setSporeTransferLoading(true);
+
+    try {
+      const { script: receiverLock } =
+        await ccc.Address.fromString(
+          sporeReceiver,
+          signer.client,
+        );
+
+      console.log("===== SPORE TRANSFER =====");
+      console.log("Spore ID:", sporeId);
+      console.log("Receiver:", sporeReceiver);
+      console.log("Receiver Lock:", receiverLock);
+
+      const { tx } = await spore.transferSpore({
+        signer,
+        id: sporeId,
+        to: receiverLock,
+      });
+
+      console.log(
+        "Transfer transaction before completion:",
+        tx,
+      );
+
+      await tx.completeInputsByCapacity(
+        signer,
+      );
+
+      await tx.completeFeeBy(
+        signer,
+      );
+
+      const txHash =
+        await signer.sendTransaction(tx);
+
+      console.log(
+        "===== SPORE TRANSFER SUCCESS =====",
+      );
+
+      console.log("Spore ID:", sporeId);
+      console.log("Transfer TX Hash:", txHash);
+
+      setAppTxHistory((prev) => {
+        const exists = prev.some(
+          (item) => item.txHash === txHash,
+        );
+
+        if (exists) {
+          return prev;
+        }
+
+        return [
+          {
+            txHash,
+            type: "Spore",
+            timestamp: new Date().toLocaleString(),
+            status: "submitted",
+            detail: "Transfer Spore",
+          },
+          ...prev,
+        ];
+      });
+
+      await waitForTransactionStatus(txHash);
+
+      alert(
+        `Spore transferred successfully!\n\nSpore ID: ${sporeId}\n\nTX Hash: ${txHash}`,
+      );
+    } catch (error) {
+      console.error(
+        "Failed to transfer Spore:",
+        error,
+      );
+    } finally {
+      setSporeTransferLoading(false);
+    }
+  }
+
+  async function meltSpore() {
+    if (!signer || !sporeId) return;
+
+    setSporeMeltLoading(true);
+
+    try {
+      console.log("===== SPORE MELT =====");
+      console.log("Spore ID:", sporeId);
+
+      const { tx } = await spore.meltSpore({
+        signer,
+        id: sporeId,
+      });
+
+      console.log(
+        "Melt transaction before completion:",
+        tx,
+      );
+
+      await tx.completeFeeBy(signer);
+
+      console.log(
+        "Melt transaction before signing:",
+        tx,
+      );
+
+      const signedTx =
+        await signer.signTransaction(tx);
+
+      console.log(
+        "Signed Melt transaction:",
+        signedTx,
+      );
+
+      const txHash =
+        await signer.client.sendTransaction(
+          signedTx,
+        );
+
+      console.log(
+        "===== SPORE MELT SUCCESS =====",
+      );
+
+      console.log(
+        "Spore ID:",
+        sporeId,
+      );
+
+      console.log(
+        "Melt TX Hash:",
+        txHash,
+      );
+
+      setAppTxHistory((prev) => {
+        const exists = prev.some(
+          (item) => item.txHash === txHash,
+        );
+
+        if (exists) {
+          return prev;
+        }
+
+        return [
+          {
+            txHash,
+            type: "Spore",
+            timestamp: new Date().toLocaleString(),
+            status: "submitted",
+            detail: "Melt Spore",
+          },
+          ...prev,
+        ];
+      });
+
+      await waitForTransactionStatus(
+        txHash,
+      );
+
+      alert(
+        `Spore melted successfully!\n\nSpore ID: ${sporeId}\n\nTX Hash: ${txHash}`,
+      );
+    } catch (error) {
+      console.error(
+        "Failed to melt Spore:",
+        error,
+      );
+    } finally {
+      setSporeMeltLoading(false);
+    }
+  }
+
+  async function waitForTransactionStatus(
+    txHash: string,
+  ) {
+    if (!signer) return;
+
+    for (let i = 0; i < 20; i++) {
+      try {
+        const txInfo =
+          await signer.client.getTransaction(txHash);
+
+        const status = txInfo?.status;
+
+        console.log(
+          `Transaction check ${i + 1}:`,
+          status,
+        );
+
+        if (status === "committed") {
+          setAppTxHistory((prev) =>
+            prev.map((item) =>
+              item.txHash === txHash
+                ? {
+                  ...item,
+                  status: "committed",
+                }
+                : item,
+            ),
+          );
+
+          await refreshBlockchainData();
+
+          return;
+        }
+      } catch (error) {
+        console.error(
+          `Transaction check ${i + 1} failed:`,
+          error,
+        );
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, 3000),
+      );
+    }
+
+    setAppTxHistory((prev) =>
+      prev.map((item) =>
+        item.txHash === txHash
+          ? {
+            ...item,
+            status: "pending",
+          }
+          : item,
+      ),
+    );
   }
 
   async function readSpore() {
@@ -1392,46 +1701,48 @@ function App() {
   }
 
   async function getBackendTransaction() {
-  try {
-    const txHash =
-      "0x011798e6c17f0769d9755cce47aed5f4026880de09051795ee2d70a777f29a7b";
+    try {
+      const txHash =
+        "0x011798e6c17f0769d9755cce47aed5f4026880de09051795ee2d70a777f29a7b";
 
-    const response = await fetch(
-      `http://localhost:3000/api/ckb/transaction?txHash=${txHash}`,
-    );
+      const response = await fetch(
+        `http://localhost:3000/api/ckb/transaction?txHash=${txHash}`,
+      );
 
-    if (!response.ok) {
-      throw new Error("Backend transaction request failed");
+      if (!response.ok) {
+        throw new Error("Backend transaction request failed");
+      }
+
+      const data = await response.json();
+
+      console.log(
+        "===== TRANSACTION FROM BACKEND =====",
+      );
+
+      console.log(
+        "Transaction Hash:",
+        data.txHash,
+      );
+
+      console.log(
+        "Transaction Status:",
+        data.status,
+      );
+
+      console.log(
+        "Transaction:",
+        data.transaction,
+      );
+    } catch (error) {
+      console.error(
+        "Failed to get transaction from backend:",
+        error,
+      );
     }
-
-    const data = await response.json();
-
-    console.log(
-      "===== TRANSACTION FROM BACKEND =====",
-    );
-
-    console.log(
-      "Transaction Hash:",
-      data.txHash,
-    );
-
-    console.log(
-      "Transaction Status:",
-      data.status,
-    );
-
-    console.log(
-      "Transaction:",
-      data.transaction,
-    );
-  } catch (error) {
-    console.error(
-      "Failed to get transaction from backend:",
-      error,
-    );
   }
-}
-getBackendTransaction();
+  useEffect(() => {
+    getBackendTransaction();
+  }, []);
 
   // Automatically load blockchain data when signer changes
   useEffect(() => {
@@ -1648,6 +1959,42 @@ getBackendTransaction();
               </div>
             ))
           )}
+          <section>
+            <h2>App Transaction History</h2>
+
+            {appTxHistory.length === 0 ? (
+              <p>No app transactions yet.</p>
+            ) : (
+              <ul>
+                {appTxHistory.map((item, index) => (
+                  <li key={`${item.txHash}-${index}`}>
+                    <p>
+                      <strong>Type:</strong> {item.type}
+                    </p>
+
+                    <p>
+                      <strong>Transaction Hash:</strong>{" "}
+                      {item.txHash}
+                    </p>
+
+                    <p>
+                      <strong>Time:</strong> {item.timestamp}
+                    </p>
+
+                    <p>
+                      <strong>Status:</strong> {item.status}
+                    </p>
+
+                    {item.detail && (
+                      <p>
+                        <strong>Detail:</strong> {item.detail}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
       )}
       <div>
@@ -1808,6 +2155,71 @@ getBackendTransaction();
               disabled={!sporeContent || sporeLoading}
             >
               Create Spore
+            </button>
+          </div>
+          <div
+            style={{
+              marginTop: "20px",
+              padding: "16px",
+              border: "1px solid #ddd",
+              borderRadius: "8px",
+            }}
+          >
+            <h3>Transfer Spore</h3>
+
+            <input
+              type="text"
+              placeholder="Spore ID"
+              value={sporeId}
+              onChange={(e) =>
+                setSporeId(e.target.value)
+              }
+              style={{
+                width: "100%",
+                marginBottom: "10px",
+                padding: "8px",
+              }}
+            />
+
+            <input
+              type="text"
+              placeholder="Receiver CKB Address"
+              value={sporeReceiver}
+              onChange={(e) =>
+                setSporeReceiver(e.target.value)
+              }
+              style={{
+                width: "100%",
+                marginBottom: "10px",
+                padding: "8px",
+              }}
+            />
+
+            <button
+              onClick={transferSpore}
+              disabled={
+                sporeTransferLoading ||
+                !sporeId ||
+                !sporeReceiver
+              }
+            >
+              {sporeTransferLoading
+                ? "Transferring..."
+                : "Transfer Spore"}
+            </button>
+            <button
+              onClick={meltSpore}
+              disabled={
+                sporeMeltLoading ||
+                !sporeId
+              }
+              style={{
+                marginTop: "10px",
+              }}
+            >
+              {sporeMeltLoading
+                ? "Melting..."
+                : "Melt Spore"}
             </button>
           </div>
           <div
